@@ -28,6 +28,7 @@ type Config struct {
 	Interval time.Duration
 	KeyFile string
 	Passphrase []byte
+	Type string
 }
 
 // WatchDir Tous les interval, recupere et synchronise les fichiers modifiés du repertoire watched.
@@ -49,6 +50,7 @@ func WatchDir(config *Config) error {
 		return err
 	}
 
+	
 	watcher, err = fsnotify.NewWatcher()
 	if err != nil {
 		log.Fatal("Cannot create fsnotify", err)
@@ -59,6 +61,7 @@ func WatchDir(config *Config) error {
 	if err != nil {
 		return fmt.Errorf("filepath.Walk() returned %v", err)
 	}
+	
 	err = Upload(config, actuels, nil, actuelsd)
 	if err != nil {
 		return fmt.Errorf("Upload() returned %v", err)
@@ -96,9 +99,9 @@ func WatchDir(config *Config) error {
 						log.Warningf("Cannot stat on [%s] : [%v]", event.Name, err)
 						break
 					}
+					watcher.Add(event.Name)
 					if info.IsDir() {
 						toUploadd = append(toUploadd, relative)
-						watcher.Add(event.Name)
 					} else {
 						toUpload = append(toUpload, relative)
 					}
@@ -122,6 +125,7 @@ func WatchDir(config *Config) error {
 		log.Fatalf("Cannot add watcher on [%s] : [%v]", config.Watched, err)
 	}
 	<-done
+
 
 	return nil
 }
@@ -149,8 +153,8 @@ func timedLoop(config *Config) {
 	toUploadd = prune(toUploadd)
 	toDelete = prune(toDelete)
 	toUploadd = remove(toUploadd, ".")
-	toUpload, toDelete = removeIntersec(toUpload, toDelete)
-	toUploadd, toDelete = removeIntersec(toUploadd, toDelete)
+	// toUpload, toDelete = removeIntersec(toUpload, toDelete)
+	// toUploadd, toDelete = removeIntersec(toUploadd, toDelete)
 	if len(toUploadd) > 0 || len(toUpload) > 0 || len(toDelete) > 0 {
 		log.Info("")
 		log.Infof("Dirs to upload [%v]", toUploadd)

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/minio/minio-go"
 	"github.com/pkg/sftp"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
@@ -18,6 +19,35 @@ import (
 
 // Clear Vide (supprime puis recrée) le repertoire distant.
 func Clear(config *Config) error {
+	if config.Type == "s3" {
+		s3Client, errconn := connectUsingMinio(config)
+		if errconn != nil {
+			log.Errorf("Problème lors de la connection à [%s]\n", config.Host)
+			return errconn
+		}
+
+		objectsCh := make(chan string)
+		// Send object names that are needed to be removed to objectsCh
+		go func() {
+			defer close(objectsCh)
+			// List all objects from a bucket-name with a matching prefix.
+			for object := range s3Client.ListObjectsV2(config.RemoteRoot, "", true, nil) {
+				if object.Err != nil {
+					log.Fatalln(object.Err)
+				}
+				objectsCh <- object.Key
+			}
+		}()
+
+		for rErr := range s3Client.RemoveObjects(config.RemoteRoot, objectsCh) {
+			fmt.Println("Error detected during deletion: ", rErr)
+		}
+
+		log.Printf("Répertoire distant [%s] remis à zéro\n", config.RemoteRoot)
+
+		return nil
+	}
+
 	session, errconn := connectUsingKey(config)
 	if errconn != nil {
 		log.Errorf("Problème lors de la connection à [%s]\n", config.Host)
@@ -69,10 +99,70 @@ func Clear(config *Config) error {
 	return nil
 }
 
+func isEmptyDir(name string) (bool, error) {
+	entries, err := ioutil.ReadDir(name)
+	if err != nil {
+		return false, err
+	}
+	return len(entries) == 0, nil
+}
+
 // Upload telecharge les fichiers en amont.
 func Upload(config *Config, ajouter, supprimer, ajouterd []string) error {
-	remotePath := filepath.Join(config.RemoteRoot, filepath.Base(config.Watched))
+	remotePath := filepath.Base(config.Watched)
 	log.Infof("Remote path : [%s]", remotePath)
+
+	if config.Type == "s3" {
+		s3Client, err := connectUsingMinio(config)
+		if err != nil {
+			return err
+		}
+
+		objectsCh := make(chan string)
+		sort.Sort(sort.Reverse(sort.StringSlice(supprimer)))
+		go func() {
+			defer close(objectsCh)
+			for _, source := range supprimer {
+				// dstFilename := filepath.Join(remotePath, source)
+				dstFilename := source
+				if dstFilename != "." {
+					log.Infof("Object to remove [%s]\n", dstFilename)
+					objectsCh <- dstFilename
+				}
+			}
+		}()
+
+		for rErr := range s3Client.RemoveObjects(config.RemoteRoot, objectsCh) {
+			log.Error("Error detected during deletion: ", rErr)
+		}
+
+		for _, source := range ajouterd {
+			// Ce cas n'est pas traité par Minio
+			srcDirname := filepath.Join(config.Watched, source)
+			// dstDirname := filepath.Join(remotePath, source)
+			dstDirname := source
+			isEmpty, err := isEmptyDir(srcDirname)
+			if err != nil {
+				return err
+			}
+			if isEmpty {
+				log.Warningf("Creation of empty remote directory [%s] is not allowed", dstDirname)
+			}
+		}
+		for _, source := range ajouter {
+			// create source file
+			srcFilename := filepath.Join(config.Watched, source)
+			// dstFilename := filepath.Join(remotePath, source)
+			dstFilename := source
+			bytes, err := s3Client.FPutObject(config.RemoteRoot, dstFilename, srcFilename, minio.PutObjectOptions{})
+			if err != nil {
+				return err
+			}
+			log.Infof("[%d] bytes remotely copied for [%s]\n", bytes, dstFilename)
+		}
+
+		return nil
+	}
 
 	client, err := connectUsingKey(config)
 	if err != nil {
@@ -136,8 +226,8 @@ func connectUsingKey(config *Config) (*sftp.Client, error) {
 		log.Fatalf("unable to get current user: %v", err)
 	}
 	filename := config.KeyFile
-  if filename == "" {
-		filename = filepath.Join(currentUser.HomeDir,".ssh", "id_rsa")
+	if filename == "" {
+		filename = filepath.Join(currentUser.HomeDir, ".ssh", "id_rsa")
 	}
 	key, err := ioutil.ReadFile(filename)
 	if err != nil {
@@ -188,4 +278,30 @@ func connectUsingKey(config *Config) (*sftp.Client, error) {
 	}
 	log.Info("Successfully initiated sftp session.")
 	return session, nil
+}
+
+func connectUsingMinio(config *Config) (*minio.Client, error) {
+	// Initialize minio client object.
+	endpoint := config.Host
+	accessKeyID := config.RemoteUser
+	secretAccessKey := string(config.Passphrase[:])
+	useSSL := false
+	minioClient, err := minio.New(endpoint, accessKeyID, secretAccessKey, useSSL)
+	if err != nil {
+		return nil, err
+	}
+
+	found, err := minioClient.BucketExists(config.RemoteRoot)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		err = minioClient.MakeBucket(config.RemoteRoot, "")
+		if err != nil {
+			return nil, err
+		}
+		log.Infof("Successfully created bucket [%s]", config.RemoteRoot)
+	}
+
+	return minioClient, nil
 }
