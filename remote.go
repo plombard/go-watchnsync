@@ -40,7 +40,7 @@ func Clear(config *Config) error {
 		}()
 
 		for rErr := range s3Client.RemoveObjects(config.RemoteRoot, objectsCh) {
-			log.Warnf("Error detected during deletion [%v]\n ", rErr)
+			fmt.Println("Error detected during deletion: ", rErr)
 		}
 
 		log.Printf("Répertoire distant [%s] remis à zéro\n", config.RemoteRoot)
@@ -107,6 +107,16 @@ func isEmptyDir(name string) (bool, error) {
 	return len(entries) == 0, nil
 }
 
+// fileExists checks if a file exists and is not a directory before we
+// try using it to prevent further errors.
+func fileExists(filename string) bool {
+	info, err := os.Stat(filename)
+	if os.IsNotExist(err) {
+		return false
+	}
+	return !info.IsDir()
+}
+
 // Upload telecharge les fichiers en amont.
 func Upload(config *Config, ajouter, supprimer, ajouterd []string) error {
 	remotePath := filepath.Base(config.Watched)
@@ -123,7 +133,8 @@ func Upload(config *Config, ajouter, supprimer, ajouterd []string) error {
 		go func() {
 			defer close(objectsCh)
 			for _, source := range supprimer {
-				dstFilename := filepath.ToSlash(source)
+				// dstFilename := filepath.Join(remotePath, source)
+				dstFilename := source
 				if dstFilename != "." {
 					log.Infof("Object to remove [%s]\n", dstFilename)
 					objectsCh <- dstFilename
@@ -132,13 +143,14 @@ func Upload(config *Config, ajouter, supprimer, ajouterd []string) error {
 		}()
 
 		for rErr := range s3Client.RemoveObjects(config.RemoteRoot, objectsCh) {
-			log.Warnf("Error detected during deletion [%v]\n ", rErr)
+			log.Error("Error detected during deletion: ", rErr)
 		}
 
 		for _, source := range ajouterd {
 			// Ce cas n'est pas traité par Minio
 			srcDirname := filepath.Join(config.Watched, source)
-			dstDirname := filepath.ToSlash(source)
+			// dstDirname := filepath.Join(remotePath, source)
+			dstDirname := source
 			isEmpty, err := isEmptyDir(srcDirname)
 			if err != nil {
 				return err
@@ -150,12 +162,15 @@ func Upload(config *Config, ajouter, supprimer, ajouterd []string) error {
 		for _, source := range ajouter {
 			// create source file
 			srcFilename := filepath.Join(config.Watched, source)
-			dstFilename := filepath.ToSlash(source)
-			bytes, err := s3Client.FPutObject(config.RemoteRoot, dstFilename, srcFilename, minio.PutObjectOptions{})
-			if err != nil {
-				return err
+			// dstFilename := filepath.Join(remotePath, source)
+			dstFilename := source
+			if fileExists(srcFilename) {
+				bytes, err := s3Client.FPutObject(config.RemoteRoot, dstFilename, srcFilename, minio.PutObjectOptions{})
+				if err != nil {
+					return err
+				}
+				log.Infof("[%d] bytes remotely copied for [%s]\n", bytes, dstFilename)
 			}
-			log.Infof("[%d] bytes remotely copied for [%s]\n", bytes, dstFilename)
 		}
 
 		return nil
@@ -287,7 +302,6 @@ func connectUsingMinio(config *Config) (*minio.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	log.Debugf("Connected to [%s]\n", config.Host)
 
 	found, err := minioClient.BucketExists(config.RemoteRoot)
 	if err != nil {
