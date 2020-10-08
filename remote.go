@@ -159,7 +159,7 @@ func Upload(config *Config, ajouter, supprimer, ajouterd []string) error {
 				log.Warningf("Creation of empty remote directory [%s] is not allowed", dstDirname)
 			}
 		}
-		for _, source := range ajouter {
+		for index, source := range ajouter {
 			// create source file
 			srcFilename := filepath.Join(config.Watched, source)
 			// dstFilename := filepath.Join(remotePath, source)
@@ -169,7 +169,7 @@ func Upload(config *Config, ajouter, supprimer, ajouterd []string) error {
 				if err != nil {
 					return err
 				}
-				log.Infof("[%d] bytes remotely copied for [%s]\n", bytes, dstFilename)
+				log.Infof("[%d] bytes remotely copied for [%s] [file %d/%d]\n", bytes, dstFilename, index + 1, len(ajouter))
 			}
 		}
 
