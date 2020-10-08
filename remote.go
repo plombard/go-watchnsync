@@ -10,6 +10,8 @@ import (
 	"os/user"
 	"path/filepath"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/minio/minio-go"
 	"github.com/pkg/sftp"
@@ -26,25 +28,55 @@ func Clear(config *Config) error {
 			return errconn
 		}
 
-		objectsCh := make(chan string)
+		var toDelete []string
+
 		// Send object names that are needed to be removed to objectsCh
 		go func() {
-			defer close(objectsCh)
+			doneCh := make(chan struct{})
+			// Indicate to our routine to exit cleanly upon return.
+			defer close(doneCh)
 			// List all objects from a bucket-name with a matching prefix.
-			for object := range s3Client.ListObjectsV2(config.RemoteRoot, "", true, nil) {
+			for object := range s3Client.ListObjectsV2(config.RemoteRoot, "", true, doneCh) {
 				if object.Err != nil {
 					log.Fatalln(object.Err)
 				}
-				objectsCh <- object.Key
+				markedForDeletion := false
+				// Mark the object for deletion,
+				// but in the case of a resuming operation,
+				// only if it's older than an existing local counterpart
+				if config.Resume == false {
+					markedForDeletion = true
+				} else {
+					// look for an older local counterpart
+					srcFilename := filepath.Join(config.Watched, object.Key)
+					localCounterPartExistsAndIsOlder := fileExistsAndIsOlder(srcFilename, object.LastModified)
+					// do remove file only if resume mode is active,
+					// and local file is newer (hence not already copied)
+					if !localCounterPartExistsAndIsOlder {
+						markedForDeletion = true
+					} else {
+						log.Printf("No local file [%v] or local is newer than [%v]\n", object.Key, object.LastModified)
+					}
+				}
+				if markedForDeletion {
+					toDelete = append(toDelete, object.Key)
+				}
 			}
 		}()
 
-		for rErr := range s3Client.RemoveObjects(config.RemoteRoot, objectsCh) {
-			fmt.Println("Error detected during deletion: ", rErr)
+		for _, object := range toDelete {
+			rErr := s3Client.RemoveObject(config.RemoteRoot, object)
+			if rErr != nil {
+				fmt.Println("Error detected during deletion: ", rErr)
+				return rErr
+			}
 		}
-
-		log.Printf("Répertoire distant [%s] remis à zéro\n", config.RemoteRoot)
-
+		
+		if config.Resume {
+			log.Printf("Répertoire distant [%s] nettoyé\n", config.RemoteRoot)
+		} else {
+			log.Printf("Répertoire distant [%s] remis à zéro\n", config.RemoteRoot)
+		}		
 		return nil
 	}
 
@@ -89,7 +121,8 @@ func Clear(config *Config) error {
 		log.Infof("Deleted dir [%s]", path)
 	}
 
-	// At this point, remote target dir is nonexistent
+	// At this point, remote target dir might be nonexistent,
+	// try to create it just in case.
 	errNew := session.MkdirAll(remotePath)
 	if errNew != nil {
 		return errNew
@@ -105,6 +138,20 @@ func isEmptyDir(name string) (bool, error) {
 		return false, err
 	}
 	return len(entries) == 0, nil
+}
+
+// fileExistsAndIsOlder checks if a file exists and is older than a provided time.
+func fileExistsAndIsOlder(filename string, reftime time.Time) bool {
+	info, err := os.Stat(filename)
+	if os.IsNotExist(err) {
+		return false
+	}
+	// To prevent errors with directories modified times,
+	// consider never removing existing directories
+	if info.IsDir() {
+		return false
+	}
+	return info.ModTime().UTC().After(reftime.UTC())
 }
 
 // fileExists checks if a file exists and is not a directory before we
@@ -164,12 +211,29 @@ func Upload(config *Config, ajouter, supprimer, ajouterd []string) error {
 			srcFilename := filepath.Join(config.Watched, source)
 			// dstFilename := filepath.Join(remotePath, source)
 			dstFilename := source
-			if fileExists(srcFilename) {
+			var doCopy bool
+			if config.Resume {
+				objectInfo, err := s3Client.StatObject(config.RemoteRoot, dstFilename, minio.StatObjectOptions{})
+				if err == nil {
+					doCopy = fileExistsAndIsOlder(srcFilename, objectInfo.LastModified)
+				} else {
+					if strings.Contains(err.Error(), "does not exist.") {
+						doCopy = true
+					} else {
+						return err
+					}	
+				}
+			} else {
+				doCopy = fileExists(srcFilename)
+			}
+			if doCopy {
 				bytes, err := s3Client.FPutObject(config.RemoteRoot, dstFilename, srcFilename, minio.PutObjectOptions{})
 				if err != nil {
 					return err
 				}
 				log.Infof("[%d] bytes remotely copied for [%s] [file %d/%d]\n", bytes, dstFilename, index + 1, len(ajouter))
+			} else {
+				log.Infof("Skipping object [%s] (already existing) [file %d/%d]\n", dstFilename, index + 1, len(ajouter))
 			}
 		}
 

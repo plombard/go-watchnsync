@@ -29,6 +29,7 @@ type Config struct {
 	KeyFile string
 	Passphrase []byte
 	Type string
+	Resume bool // Skip deleting the remote path first
 }
 
 // WatchDir Tous les interval, recupere et synchronise les fichiers modifiés du repertoire watched.
