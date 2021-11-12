@@ -1,7 +1,9 @@
 package fonctions
 
 import (
+	"crypto/md5"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -11,8 +13,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
+	"code.cloudfoundry.org/bytefmt"
 	"github.com/minio/minio-go"
 	"github.com/pkg/sftp"
 	log "github.com/sirupsen/logrus"
@@ -49,13 +51,14 @@ func Clear(config *Config) error {
 				} else {
 					// look for an older local counterpart
 					srcFilename := filepath.Join(config.Watched, object.Key)
-					localCounterPartExistsAndIsOlder := fileExistsAndIsOlder(srcFilename, object.LastModified)
+					// localCounterPartExistsAndIsOlder := fileExistsAndIsOlder(srcFilename, object.LastModified)
+					localCounterPartExistsAndIsDifferent := fileExistsAndIsDifferent(srcFilename, strings.Trim(object.ETag, "\""))
 					// do remove file only if resume mode is active,
-					// and local file is newer (hence not already copied)
-					if !localCounterPartExistsAndIsOlder {
+					// and local file is different (hence not already copied)
+					if !localCounterPartExistsAndIsDifferent {
 						markedForDeletion = true
 					} else {
-						log.Printf("No local file [%v] or local is newer than [%v]\n", object.Key, object.LastModified)
+						log.Printf("No local file [%v] or local [%s] checksum is different than ETag[%v]\n", object.Key, srcFilename, strings.Trim(object.ETag, "\""))
 					}
 				}
 				if markedForDeletion {
@@ -140,8 +143,8 @@ func isEmptyDir(name string) (bool, error) {
 	return len(entries) == 0, nil
 }
 
-// fileExistsAndIsOlder checks if a file exists and is older than a provided time.
-func fileExistsAndIsOlder(filename string, reftime time.Time) bool {
+// fileExistsAndIsDifferent checks if a file exists and has diferrent checksum than the one provided.
+func fileExistsAndIsDifferent(filename string, checksum string) bool {
 	info, err := os.Stat(filename)
 	if os.IsNotExist(err) {
 		return false
@@ -151,7 +154,18 @@ func fileExistsAndIsOlder(filename string, reftime time.Time) bool {
 	if info.IsDir() {
 		return false
 	}
-	return info.ModTime().UTC().After(reftime.UTC())
+	f, err := os.Open(filename)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+
+	calculatedHash := md5.New()
+	if _, err := io.Copy(calculatedHash, f); err != nil {
+		log.Fatal(err)
+	}
+	log.Debugf("File[%s] s3hash[%s] calculated[%s] equals[%t]", filename, checksum, hex.EncodeToString(calculatedHash.Sum(nil)), strings.EqualFold(checksum, hex.EncodeToString(calculatedHash.Sum(nil))))
+	return !strings.EqualFold(checksum, hex.EncodeToString(calculatedHash.Sum(nil)))
 }
 
 // fileExists checks if a file exists and is not a directory before we
@@ -215,7 +229,7 @@ func Upload(config *Config, ajouter, supprimer, ajouterd []string) error {
 			if config.Resume {
 				objectInfo, err := s3Client.StatObject(config.RemoteRoot, dstFilename, minio.StatObjectOptions{})
 				if err == nil {
-					doCopy = fileExistsAndIsOlder(srcFilename, objectInfo.LastModified)
+					doCopy = fileExistsAndIsDifferent(srcFilename, objectInfo.ETag)
 				} else {
 					if strings.Contains(err.Error(), "does not exist.") {
 						doCopy = true
@@ -274,7 +288,7 @@ func Upload(config *Config, ajouter, supprimer, ajouterd []string) error {
 		if err != nil {
 			return err
 		}
-		log.Infof("[%d] bytes remotely copied\n", bytes)
+		log.Infof("[%s] bytes remotely copied\n", bytefmt.ByteSize(uint64(bytes)))
 	}
 
 	// Trick : on supprime dans l'ordre decroissant
