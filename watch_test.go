@@ -2,9 +2,10 @@ package fonctions
 
 import (
 	"flag"
-	"log"
 	"os"
 	"testing"
+
+	log "github.com/sirupsen/logrus"
 )
 
 func TestMain(m *testing.M) {
@@ -31,6 +32,7 @@ func TestMain(m *testing.M) {
 		Type : "s3",
 		Resume: resume,
 	}
+	log.SetLevel(log.DebugLevel)
 	log.Printf("Using config [%+v]\n", config)
 	err := WatchDir(config)
 	if err != nil {

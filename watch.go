@@ -34,6 +34,10 @@ type Config struct {
 
 // WatchDir Tous les interval, recupere et synchronise les fichiers modifiés du repertoire watched.
 func WatchDir(config *Config) error {
+	log.SetFormatter(&log.TextFormatter{ 
+		FullTimestamp: true,
+		TimestampFormat: time.Stamp,
+	})
 	rootpath = config.Watched
 	// Ecoute les signaux, et notifie le ctrl-c
 	c := make(chan os.Signal, 1)
