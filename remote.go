@@ -245,7 +245,7 @@ func Upload(config *Config, ajouter, supprimer, ajouterd []string) error {
 				if err != nil {
 					return err
 				}
-				log.Infof("[%d] bytes remotely copied for [%s] [file %d/%d]\n", bytes, dstFilename, index + 1, len(ajouter))
+				log.Infof("[%s] remotely copied for [%s] [file %d/%d]\n", bytefmt.ByteSize(uint64(bytes)), dstFilename, index + 1, len(ajouter))
 			} else {
 				log.Infof("Skipping object [%s] (already existing) [file %d/%d]\n", dstFilename, index + 1, len(ajouter))
 			}
@@ -288,7 +288,7 @@ func Upload(config *Config, ajouter, supprimer, ajouterd []string) error {
 		if err != nil {
 			return err
 		}
-		log.Infof("[%s] bytes remotely copied\n", bytefmt.ByteSize(uint64(bytes)))
+		log.Infof("[%s] remotely copied for file [%s]\n", bytefmt.ByteSize(uint64(bytes)), source)
 	}
 
 	// Trick : on supprime dans l'ordre decroissant
