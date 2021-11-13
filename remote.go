@@ -44,7 +44,7 @@ func Clear(config *Config) error {
 				// Mark the object for deletion,
 				// but in the case of a resuming operation,
 				// only if it's older than an existing local counterpart
-				if config.Resume == false {
+				if !config.Resume {
 					markedForDeletion = true
 				} else {
 					// look for an older local counterpart
@@ -343,7 +343,7 @@ func connectUsingKey(config *Config) (*sftp.Client, error) {
 
 	client, err := ssh.Dial("tcp", config.Host+":22", sshConfig)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to dial: [%s]", err.Error())
+		return nil, fmt.Errorf("failed to dial: [%s]", err.Error())
 	}
 	log.Info("Successfully connected to ssh server.")
 
